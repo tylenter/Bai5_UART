@@ -1,82 +1,128 @@
 #include "stm32f10x.h"
-#include "stm32f10x_rcc.h"
 #include "stm32f10x_gpio.h"
 #include "stm32f10x_usart.h"
+#include "string.h"
+#include "misc.h"
 
-void USART1_Config(void);
-void Delay_ms(uint32_t ms);
-void USART1_SendString(char *s);
-void USART1_SendChar(char c);
+#define LED GPIO_Pin_5
+#define TX GPIO_Pin_9
+#define RX GPIO_Pin_10
 
-int main(void)
+ char command[16];
+ int idx = 0;
+ int ready = 0;
+
+void GPIO_Config(void)
 {
-    SystemInit(); 
-    USART1_Config();
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
+    GPIO_InitTypeDef g;
 
-    while (1)
-    {
-				USART1_SendString("ON\r\n");
-				GPIO_ResetBits(GPIOA, GPIO_Pin_5);
-				Delay_ms(2000);
-				USART1_SendString("OFF\r\n");
-				GPIO_SetBits(GPIOA, GPIO_Pin_5);
-				Delay_ms(2000);
-    }
+    g.GPIO_Pin = LED;
+    g.GPIO_Mode = GPIO_Mode_Out_PP;
+    g.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA, &g);
+
+    g.GPIO_Pin = TX;
+    g.GPIO_Mode = GPIO_Mode_AF_PP;
+    g.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOA, &g);
+
+    g.GPIO_Pin = RX;
+    g.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    GPIO_Init(GPIOA, &g);
 }
 
-void USART1_Config(void)
+void UART_Config(void)
 {
-    GPIO_InitTypeDef GPIO_InitStructure;
-    USART_InitTypeDef USART_InitStructure;
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+    USART_InitTypeDef usart;
+    USART_StructInit(&usart);
 
-    
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO | RCC_APB2Periph_USART1, ENABLE);
+    usart.USART_BaudRate = 115200;
+    usart.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    usart.USART_Parity = USART_Parity_No;
+    usart.USART_WordLength = USART_WordLength_8b;
+    usart.USART_StopBits = USART_StopBits_1;
+    usart.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
 
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    USART_Init(USART1, &usart);
 
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-	
-		
-    GPIO_InitStructure.GPIO_Pin   = GPIO_Pin_5;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-		GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-    USART_InitStructure.USART_BaudRate = 115200; 
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;
-    USART_InitStructure.USART_Parity = USART_Parity_No;
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
-    USART_Init(USART1, &USART_InitStructure);
-
+    NVIC_InitTypeDef nvic;
+    nvic.NVIC_IRQChannel = USART1_IRQn;
+    nvic.NVIC_IRQChannelPreemptionPriority = 0;
+    nvic.NVIC_IRQChannelSubPriority = 0;
+    nvic.NVIC_IRQChannelCmd = ENABLE;
+    NVIC_Init(&nvic);
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
     USART_Cmd(USART1, ENABLE);
 }
 
-void USART1_SendChar(char c) 
-{ 
-		while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET); 
-		USART_SendData(USART1, (uint16_t)c); 
+void Print_Char(char c)
+{
+    while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+    USART_SendData(USART1, (uint16_t)c);
 }
 
-
-void USART1_SendString(char *s)
+void Print_String(char *s)
 {
     while (*s)
     {
-        while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
-        USART_SendData(USART1, (uint16_t)(*s++));
+        Print_Char(*s++);
     }
 }
 
-void Delay_ms(uint32_t ms)
+void USART1_IRQHandler(void)
 {
-    uint32_t i, j;
-    for (i = 0; i < ms; i++)
-        for (j = 0; j < 8000; j++) __NOP();
+    if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET)
+    {
+        char c = (char)USART_ReceiveData(USART1);
+        if (c == '\n')
+        {
+            command[idx] = '\0';
+            ready = 1;
+            Print_String("\n\r");
+        }
+        else if (c == '\r')
+        {
+        }
+        else
+        {
+            if(idx < 16){
+				command[idx++] = c;
+				Print_Char(c);
+			}
+        }
+    }
+}
+
+int main(void)
+{
+    GPIO_Config();
+    UART_Config();
+    GPIO_ResetBits(GPIOA, LED);
+    Print_String("Hello FROM STM32 !\r\n");
+    while (1)
+    {
+        if (ready)
+        {
+            if (strcmp(command, "ON") == 0)
+            {
+                GPIO_SetBits(GPIOA, LED);
+                Print_String("LED ON\r\n");
+            }
+            else if (strcmp(command, "OFF") == 0)
+            {
+                GPIO_ResetBits(GPIOA, LED);
+                Print_String("LED OFF\r\n");
+            }
+            else
+            {
+                Print_String("Invalid command\r\n");
+            }
+            ready = 0;
+            idx = 0;
+            memset(command, 0, 16);
+
+        }
+    }
 }
